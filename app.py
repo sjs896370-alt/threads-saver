@@ -16,31 +16,32 @@ st.title("🧵 Threads 收藏管理員")
 
 with st.sidebar:
     st.header("🔑 登入設定")
-    cookie_str = st.text_area("請貼入電腦端匯出的 JSON Cookies", height=200)
+    cookie_str = st.text_area("請貼入匯出的 JSON Cookies", height=200)
 
 if st.button("🚀 開始同步收藏"):
     if not cookie_str:
         st.error("❌ 請先貼入 Cookies！")
     else:
-        with st.spinner("🕵️ 正在攻克最後關卡，請稍候..."):
+        with st.spinner("🕵️ 正在同步收藏貼文..."):
             try:
-                # 1. 徹底清洗並強制網域同步
+                # 1. 徹底清洗並建立雙網域 Cookie
                 raw_cookies = json.loads(cookie_str)
                 final_cookies = []
                 for ck in raw_cookies:
-                    # 同時設定 .com 與 .net 的權限
-                    for domain in [".threads.com", ".threads.net"]:
-                        new_ck = {
+                    # 修正 SameSite 格式
+                    ss = str(ck.get("sameSite", "Lax")).capitalize()
+                    ss = ss if ss in ["Strict", "Lax", "None"] else "Lax"
+                    
+                    # 同時為 .com 和 .net 注入同一份 Cookie 權限
+                    for d in [".threads.com", ".threads.net"]:
+                        final_cookies.append({
                             "name": ck["name"],
                             "value": ck["value"],
-                            "domain": domain,
+                            "domain": d,
                             "path": "/",
-                            "secure": True
-                        }
-                        # 修正 SameSite 報錯
-                        ss = str(ck.get("sameSite", "Lax")).capitalize()
-                        new_ck["sameSite"] = ss if ss in ["Strict", "Lax", "None"] else "Lax"
-                        final_cookies.append(new_ck)
+                            "secure": True,
+                            "sameSite": ss
+                        })
                 
                 with sync_playwright() as p:
                     browser = p.chromium.launch(headless=True)
@@ -51,37 +52,38 @@ if st.button("🚀 開始同步收藏"):
                     context.add_cookies(final_cookies)
                     page = context.new_page()
 
-                    # 2. 先前往首頁，確保登入狀態被系統認可
+                    # 2. 先前往首頁紮根，再轉向收藏夾
                     page.goto("https://www.threads.net/", wait_until="networkidle")
                     time.sleep(5)
-                    
-                    # 3. 前往收藏頁面 (嘗試官方正確路徑)
                     page.goto("https://www.threads.net/settings/saved", wait_until="networkidle")
-                    time.sleep(15) 
+                    
+                    # 延長等待時間確保內容加載
+                    time.sleep(20) 
 
                     data_list = []
-                    # 4. 強力掃描：搜尋包含數字條列特徵的文字
-                    # 這是抓取「1.北歐看極光」這類內容的最穩路徑
-                    all_text_elements = page.locator('span[dir="auto"], div[style*="white-space: pre-wrap"]').all()
+                    # 3. 搜尋貼文內容
+                    # Threads 的收藏內容通常在特定 dir="auto" 的 span 或 div 中
+                    elements = page.locator('span[dir="auto"], div[style*="white-space: pre-wrap"]').all()
                     
-                    for el in all_text_elements:
+                    for el in elements:
                         txt = el.inner_text().strip()
-                        # 過濾掉錯誤訊息與短文字
-                        if len(txt) > 10 and not any(x in txt for x in ["Not all who wander", "Log in", "Terms", "Policy"]):
+                        # 排除系統訊息，鎖定真正的收藏文字
+                        if len(txt) > 5 and not any(x in txt for x in ["Not all", "wander", "working", "Terms", "Policy"]):
                             if txt not in [d['內容'] for d in data_list]:
-                                data_list.append({"內容": txt, "抓取時間": time.strftime("%H:%M")})
+                                data_list.append({"內容": txt, "時間": time.strftime("%H:%M")})
 
                     if data_list:
                         df = pd.DataFrame(data_list)
                         st.success(f"✅ 成功抓取 {len(df)} 則貼文！")
                         st.dataframe(df, use_container_width=True)
-                        st.download_button("📥 下載 Excel (修正亂碼)", df.to_csv(index=False, encoding="utf-8-sig").encode('utf-8-sig'), "threads_saved.csv")
+                        st.download_button("📥 下載 Excel", df.to_csv(index=False, encoding="utf-8-sig").encode('utf-8-sig'), "threads.csv")
                     else:
-                        st.warning("⚠️ 還是抓不到。請在電腦上點開『收藏』頁面，確保看得到內容後重新匯出一次 Cookie。")
+                        # 失敗診斷
+                        page.screenshot(path="debug.png")
+                        st.warning("⚠️ 沒抓到貼文。請確認您在電腦端正開著『收藏夾』畫面並重新匯出 Cookie。")
+                        with open("debug.png", "rb") as f:
+                            st.download_button("📸 下載 Debug 截圖", f, "debug.png")
                     
                     browser.close()
             except Exception as e:
                 st.error(f"❌ 發生錯誤：{str(e)}")
-                    browser.close()
-            except Exception as e:
-                st.error(f"❌ 錯誤：{str(e)}")
