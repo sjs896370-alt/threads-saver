@@ -1,6 +1,7 @@
 import streamlit as st
 import os
 
+# 環境初始化
 if "browser_fixed" not in st.session_state:
     os.system("playwright install chromium")
     st.session_state.browser_fixed = True
@@ -15,76 +16,76 @@ st.title("🧵 Threads 收藏管理員")
 
 with st.sidebar:
     st.header("🔑 登入設定")
-    cookie_str = st.text_area("請貼入最新匯出的 JSON Cookies", height=200)
+    cookie_str = st.text_area("請貼入 JSON Cookies", height=200)
 
 if st.button("🚀 開始同步收藏"):
     if not cookie_str:
         st.error("❌ 請先貼入 Cookies！")
     else:
-        with st.spinner("🕵️ 正在攻克導向陷阱..."):
+        with st.spinner("🕵️ 正在攻克最後關卡..."):
             try:
+                # --- 1. 極度嚴格的 Cookie 清洗 ---
                 raw_cookies = json.loads(cookie_str)
-                fixed_cookies = []
+                cleaned_cookies = []
                 for ck in raw_cookies:
-                    # 同時給予 .com 和 .net 的權限，防止跳轉時掉資訊
-                    domain = ck.get("domain", "")
-                    if "threads.com" in domain or "threads.net" in domain:
-                        # 複製一份給 .net
-                        ck_net = ck.copy()
-                        ck_net["domain"] = domain.replace("threads.com", "threads.net")
-                        if "sameSite" in ck_net:
-                            ss = str(ck_net["sameSite"]).capitalize()
-                            ck_net["sameSite"] = ss if ss in ["Strict", "Lax", "None"] else "Lax"
-                        fixed_cookies.append(ck_net)
-                    fixed_cookies.append(ck)
+                    # 修正網域：不管是 .com 還是 .net 全部支援
+                    domain = ck.get("domain", "").replace("threads.com", "threads.net")
+                    if not domain.startswith("."): domain = "." + domain
+                    
+                    # 建立乾淨的 Cookie 字典
+                    new_ck = {
+                        "name": ck["name"],
+                        "value": ck["value"],
+                        "domain": domain,
+                        "path": ck.get("path", "/"),
+                        "secure": True
+                    }
+                    
+                    # 強制處理 SameSite (這是報錯主因)
+                    ss = str(ck.get("sameSite", "Lax")).capitalize()
+                    if ss in ["Strict", "Lax", "None"]:
+                        new_ck["sameSite"] = ss
+                    else:
+                        new_ck["sameSite"] = "Lax" # 預設安全值
+                        
+                    cleaned_cookies.append(new_ck)
                 
                 with sync_playwright() as p:
                     browser = p.chromium.launch(headless=True)
-                    # 模擬真實電腦的 User Agent
+                    # 模擬真實電腦環境，這是進入收藏夾的關鍵
                     context = browser.new_context(
                         viewport={'width': 1280, 'height': 800},
-                        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                        extra_http_headers={"Referer": "https://www.threads.net/"}
+                        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
                     )
-                    context.add_cookies(fixed_cookies)
+                    context.add_cookies(cleaned_cookies)
                     page = context.new_page()
 
-                    # 第一步：先去首頁「紮根」，讓系統認可你的 Cookie
+                    # 先去首頁「刷臉」
                     page.goto("https://www.threads.net/", wait_until="networkidle")
                     time.sleep(5)
                     
-                    # 第二步：直接進入收藏夾，並等待較長時間讓 Ajax 內容跑完
+                    # 前往真正的收藏頁面
                     page.goto("https://www.threads.net/settings/saved", wait_until="networkidle")
-                    
-                    # 滾動幾次以確保觸發內容加載
-                    for _ in range(3):
-                        page.mouse.wheel(0, 500)
-                        time.sleep(2)
+                    time.sleep(15) 
 
                     data_list = []
-                    # 深度翻找：除了 span，也找 div 和 article 標籤
-                    selectors = ['div[dir="auto"]', 'span[dir="auto"]', 'article']
+                    # 深度抓取包含「人生清單」的內容
+                    potential_targets = page.locator('div[dir="auto"], span[dir="auto"]').all()
                     
-                    for selector in selectors:
-                        elements = page.locator(selector).all()
-                        for el in elements:
-                            txt = el.inner_text().strip()
-                            # 過濾掉雜訊
-                            if len(txt) > 10 and not any(x in txt for x in ["Log in", "Forgot", "Policy", "Terms", "Instagram", "About"]):
-                                if txt not in [d['內容'] for d in data_list]:
-                                    data_list.append({"內容": txt, "時間": time.strftime("%H:%M")})
+                    for target in potential_targets:
+                        txt = target.inner_text().strip()
+                        # 排除掉法律條款雜訊，鎖定有意義的內容
+                        if len(txt) > 10 and not any(x in txt for x in ["Policy", "Terms", "Instagram", "About"]):
+                            if txt not in [d['內容'] for d in data_list]:
+                                data_list.append({"內容": txt, "時間": time.strftime("%H:%M")})
 
                     if data_list:
                         df = pd.DataFrame(data_list)
-                        st.success(f"✅ 成功同步 {len(df)} 則貼文！")
+                        st.success(f"✅ 成功抓取 {len(df)} 則貼文！")
                         st.dataframe(df, use_container_width=True)
-                        st.download_button("📥 下載 Excel", df.to_csv(index=False, encoding="utf-8-sig").encode('utf-8-sig'), "threads_final.csv")
+                        st.download_button("📥 下載修正亂碼版 Excel", df.to_csv(index=False, encoding="utf-8-sig").encode('utf-8-sig'), "threads_saved.csv")
                     else:
-                        # 失敗的話，看看到底跳轉到了哪裡
-                        st.warning(f"⚠️ 目前停留在：{page.url}")
-                        page.screenshot(path="final_debug.png")
-                        with open("final_debug.png", "rb") as f:
-                            st.download_button("📸 下載 Debug 截圖", f, "debug_view.png")
+                        st.warning("⚠️ 抓不到內容。請在電腦上確認能否看到收藏，並重新匯出 Cookie。")
                     
                     browser.close()
             except Exception as e:
