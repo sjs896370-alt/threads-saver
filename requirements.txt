@@ -1,3 +1,2 @@
 streamlit
-playwright-pip-install
-pandas
+playwright
