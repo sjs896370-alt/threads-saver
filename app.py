@@ -1,7 +1,7 @@
 import streamlit as st
 import os
 
-# 初始化環境
+# 環境初始化
 if "browser_fixed" not in st.session_state:
     os.system("playwright install chromium")
     st.session_state.browser_fixed = True
@@ -16,32 +16,29 @@ st.title("🧵 Threads 收藏管理員")
 
 with st.sidebar:
     st.header("🔑 登入設定")
-    cookie_str = st.text_area("請貼入匯出的 JSON Cookies", height=200)
+    cookie_str = st.text_area("請貼入 JSON Cookies", height=200)
 
 if st.button("🚀 開始同步收藏"):
     if not cookie_str:
         st.error("❌ 請先貼入 Cookies！")
     else:
-        with st.spinner("🕵️ 正在同步收藏貼文..."):
+        with st.spinner("🕵️ 正在攻克最後關卡，請稍候約 40 秒..."):
             try:
-                # 1. 徹底清洗並建立雙網域 Cookie
+                # 1. 處理並同時注入 .com 與 .net 的權限
                 raw_cookies = json.loads(cookie_str)
-                final_cookies = []
+                fixed_cookies = []
                 for ck in raw_cookies:
-                    # 修正 SameSite 格式
+                    # 修正 SameSite 報錯問題
                     ss = str(ck.get("sameSite", "Lax")).capitalize()
                     ss = ss if ss in ["Strict", "Lax", "None"] else "Lax"
                     
-                    # 同時為 .com 和 .net 注入同一份 Cookie 權限
-                    for d in [".threads.com", ".threads.net"]:
-                        final_cookies.append({
-                            "name": ck["name"],
-                            "value": ck["value"],
-                            "domain": d,
-                            "path": "/",
-                            "secure": True,
-                            "sameSite": ss
-                        })
+                    # 同時給予兩個網域相同的鑰匙
+                    for domain in [".threads.com", ".threads.net"]:
+                        new_ck = ck.copy()
+                        new_ck["domain"] = domain
+                        new_ck["sameSite"] = ss
+                        if "id" in new_ck: del new_ck["id"] # 移除 Playwright 不認識的欄位
+                        fixed_cookies.append(new_ck)
                 
                 with sync_playwright() as p:
                     browser = p.chromium.launch(headless=True)
@@ -49,39 +46,42 @@ if st.button("🚀 開始同步收藏"):
                         viewport={'width': 1280, 'height': 800},
                         user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
                     )
-                    context.add_cookies(final_cookies)
+                    context.add_cookies(fixed_cookies)
                     page = context.new_page()
 
-                    # 2. 先前往首頁紮根，再轉向收藏夾
+                    # 2. 先去首頁「紮根」
                     page.goto("https://www.threads.net/", wait_until="networkidle")
                     time.sleep(5)
+                    
+                    # 3. 直接導向你的目標收藏頁
                     page.goto("https://www.threads.net/settings/saved", wait_until="networkidle")
                     
-                    # 延長等待時間確保內容加載
-                    time.sleep(20) 
+                    # 4. 模擬人類捲動，確保「人生清單」內容被載入
+                    for _ in range(3):
+                        page.mouse.wheel(0, 1000)
+                        time.sleep(3)
 
                     data_list = []
-                    # 3. 搜尋貼文內容
-                    # Threads 的收藏內容通常在特定 dir="auto" 的 span 或 div 中
+                    # 5. 精準抓取：尋找包含你截圖中「1.」這種條列格式的區塊
                     elements = page.locator('span[dir="auto"], div[style*="white-space: pre-wrap"]').all()
                     
                     for el in elements:
                         txt = el.inner_text().strip()
-                        # 排除系統訊息，鎖定真正的收藏文字
-                        if len(txt) > 5 and not any(x in txt for x in ["Not all", "wander", "working", "Terms", "Policy"]):
+                        # 過濾掉雜訊文字，保留真正貼文
+                        if len(txt) > 10 and not any(x in txt for x in ["Not all", "wander", "working", "Instagram", "Policy", "Terms"]):
                             if txt not in [d['內容'] for d in data_list]:
                                 data_list.append({"內容": txt, "時間": time.strftime("%H:%M")})
 
                     if data_list:
                         df = pd.DataFrame(data_list)
-                        st.success(f"✅ 成功抓取 {len(df)} 則貼文！")
+                        st.success(f"✅ 成功同步 {len(df)} 則貼文！")
                         st.dataframe(df, use_container_width=True)
-                        st.download_button("📥 下載 Excel", df.to_csv(index=False, encoding="utf-8-sig").encode('utf-8-sig'), "threads.csv")
+                        st.download_button("📥 下載 Excel (修正亂碼)", df.to_csv(index=False, encoding="utf-8-sig").encode('utf-8-sig'), "threads_final.csv")
                     else:
-                        # 失敗診斷
-                        page.screenshot(path="debug.png")
-                        st.warning("⚠️ 沒抓到貼文。請確認您在電腦端正開著『收藏夾』畫面並重新匯出 Cookie。")
-                        with open("debug.png", "rb") as f:
+                        # 失敗的話，拍張照看看它在哪
+                        page.screenshot(path="debug_final.png")
+                        st.warning("⚠️ 還是沒抓到內容。請嘗試在電腦重新整理『收藏夾』後，再次匯出 Cookie 貼入。")
+                        with open("debug_final.png", "rb") as f:
                             st.download_button("📸 下載 Debug 截圖", f, "debug.png")
                     
                     browser.close()
