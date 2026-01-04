@@ -1,7 +1,7 @@
 import streamlit as st
 import os
 
-# 強制安裝瀏覽器零件
+# 環境初始化
 if "browser_fixed" not in st.session_state:
     os.system("playwright install chromium")
     st.session_state.browser_fixed = True
@@ -16,69 +16,60 @@ st.title("🧵 Threads 收藏管理員")
 
 with st.sidebar:
     st.header("🔑 登入設定")
-    cookie_str = st.text_area("請貼入 Threads Cookies (JSON 格式)", height=200)
+    cookie_str = st.text_area("請貼入最新匯出的 JSON Cookies", height=200)
 
 if st.button("🚀 開始同步收藏"):
     if not cookie_str:
         st.error("❌ 請先貼入 Cookies！")
     else:
-        with st.spinner("🕵️ 正在處理並同步資料..."):
+        with st.spinner("🕵️ 正在同步收藏夾..."):
             try:
-                # 1. 處理 JSON 格式
+                # 處理並過濾 Cookie
                 raw_cookies = json.loads(cookie_str)
                 fixed_cookies = []
-                
                 for ck in raw_cookies:
-                    # 修正網域：統一使用 .threads.net 確保登入有效
+                    # 強制修正網域與屬性
                     if "domain" in ck:
                         ck["domain"] = ck["domain"].replace(".threads.com", ".threads.net")
-                    
-                    # 修正 SameSite：這是截圖報錯的主因
-                    # Playwright 只接受 'Strict', 'Lax', 或 'None' (注意大小寫)
                     if "sameSite" in ck:
                         ss = str(ck["sameSite"]).capitalize()
-                        if ss not in ["Strict", "Lax", "None"]:
-                            ss = "Lax" # 預設安全值
-                        ck["sameSite"] = ss
+                        ck["sameSite"] = ss if ss in ["Strict", "Lax", "None"] else "Lax"
                     fixed_cookies.append(ck)
                 
                 with sync_playwright() as p:
                     browser = p.chromium.launch(headless=True)
-                    context = browser.new_context(
-                        user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"
-                    )
+                    # 模擬電腦版寬螢幕
+                    context = browser.new_context(viewport={'width': 1280, 'height': 800})
                     context.add_cookies(fixed_cookies)
 
                     page = context.new_page()
-                    # 嘗試前往收藏頁面
-                    page.goto("https://www.threads.net/settings/saved", wait_until="domcontentloaded")
+                    # 直接前往目標網址
+                    page.goto("https://www.threads.net/settings/saved", wait_until="networkidle", timeout=60000)
                     
-                    # 雲端需多預留加載時間
+                    # 等待內容載入
                     time.sleep(15) 
 
                     data_list = []
-                    # 抓取邏輯
-                    for _ in range(5):
-                        # 抓取包含文字的區塊
-                        posts = page.locator('div[style*="white-space: pre-wrap"]').all()
-                        if not posts:
-                            posts = page.locator('span[dir="auto"]').all()
-                            
-                        for post in posts:
-                            txt = post.inner_text()
-                            if len(txt) > 2 and txt not in [d['內容'] for d in data_list]:
+                    # 抓取貼文，並避開頁底條款
+                    elements = page.query_selector_all('div[dir="auto"], span[dir="auto"]')
+                    for el in elements:
+                        txt = el.inner_text().strip()
+                        # 過濾掉法律條款與短字
+                        if len(txt) > 5 and not any(x in txt for x in ["Policy", "Terms", "Cookies", "Report"]):
+                            if txt not in [d['內容'] for d in data_list]:
                                 data_list.append({"內容": txt, "時間": time.strftime("%H:%M")})
-                        
-                        page.keyboard.press("End")
-                        time.sleep(3)
 
                     if data_list:
                         df = pd.DataFrame(data_list)
-                        st.success(f"✅ 成功同步 {len(df)} 則貼文！")
+                        st.success(f"✅ 成功抓取 {len(df)} 則貼文！")
                         st.dataframe(df, use_container_width=True)
-                        st.download_button("📥 下載檔案", df.to_csv(index=False).encode('utf-8-sig'), "threads_saved.csv")
+                        st.download_button("📥 下載 Excel (修正亂碼)", df.to_csv(index=False, encoding="utf-8-sig").encode('utf-8-sig'), "threads.csv")
                     else:
-                        st.warning("⚠️ 抓不到內容，請確認 Cookie 是否仍有效（建議電腦重新整理後再次匯出）。")
+                        # 這是診斷關鍵：如果抓不到，拍一張目前的畫面
+                        page.screenshot(path="debug.png")
+                        st.warning("⚠️ 沒抓到貼文。可能被擋在登入頁面了。")
+                        with open("debug.png", "rb") as f:
+                            st.download_button("📸 查看程式現在看到的畫面 (Debug)", f, "debug.png")
                     
                     browser.close()
             except Exception as e:
